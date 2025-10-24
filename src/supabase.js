@@ -110,3 +110,21 @@ export async function updateStatusInSupabase(status) {
     return false;
   }
 }
+
+// Função para pegar o status do banco
+export async function getStatusFromSupabase() {
+  try {
+    const { data, error } = await supabase
+      .from('whatsapp_sessions')
+      .select('status')
+      .eq('id', 1)
+      .single();
+
+    if (error) throw error;
+    
+    return data?.status || 'disconnected';
+  } catch (error) {
+    console.error('❌ Erro ao buscar status:', error);
+    return 'disconnected';
+  }
+}

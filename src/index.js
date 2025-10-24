@@ -1,5 +1,5 @@
 import express from 'express';
-import { initializeBaileys, getStatus, sendMessage } from './baileys.js';
+import { initializeBaileys, sendMessage } from './baileys.js';
 
 const app = express();
 app.use(express.json());
