@@ -30,3 +30,14 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Servidor rodando na porta ${PORT}`);
 });
+
+// Endpoint para checar status
+app.get('/status', async (req, res) => {
+  try {
+    const status = await getStatusFromSupabase();
+    res.json({ status });
+  } catch (error) {
+    console.error('Error getting status:', error);
+    res.status(500).json({ error: 'Failed to get status' });
+  }
+});
