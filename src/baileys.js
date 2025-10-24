@@ -4,20 +4,35 @@ import makeWASocket, {
   fetchLatestBaileysVersion 
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
-import { saveSessionToSupabase, loadSessionFromSupabase } from './supabase.js';
+import { 
+  saveSessionToSupabase, 
+  loadSessionFromSupabase,
+  clearSessionFromSupabase,
+  saveQRToSupabase,
+  updateStatusInSupabase 
+} from './supabase.js';
 
 let sock = null;
 
-export async function initializeWhatsApp() {
+export async function initializeBaileys() {
   try {
-    // 1. CARREGAR SESSÃO DO SUPABASE (não do arquivo)
+    console.log('🔄 Inicializando WhatsApp...');
+    
+    // 1. Tentar carregar sessão do Supabase
     const savedSession = await loadSessionFromSupabase();
     
-    // 2. USAR SESSÃO SALVA OU CRIAR NOVA
-    let { state, saveCreds } = savedSession 
+    // 2. Usar sessão salva ou criar nova
+    const { state, saveCreds } = savedSession && savedSession.creds
       ? { 
           state: savedSession, 
-          saveCreds: async () => {} // placeholder
+          saveCreds: async () => {
+            console.log('📝 Salvando credenciais...');
+            const currentState = {
+              creds: sock.authState.creds,
+              keys: sock.authState.keys
+            };
+            await saveSessionToSupabase(currentState);
+          }
         }
       : await useMultiFileAuthState('./auth_temp');
 
@@ -30,18 +45,16 @@ export async function initializeWhatsApp() {
       browser: ['WhatsApp Business', 'Chrome', '4.0.0'],
     });
 
-    // 3. SALVAR CREDENCIAIS NO SUPABASE (não em arquivo)
+    // 3. Salvar credenciais no Supabase quando mudarem
     sock.ev.on('creds.update', async () => {
-      console.log('🔐 Credenciais atualizadas, salvando no Supabase...');
+      console.log('🔐 Credenciais atualizadas');
       
       try {
-        // Pegar o estado atual
         const currentState = {
           creds: sock.authState.creds,
           keys: sock.authState.keys
         };
         
-        // Salvar no Supabase
         await saveSessionToSupabase(currentState);
         console.log('✅ Sessão salva no Supabase');
       } catch (error) {
@@ -49,13 +62,13 @@ export async function initializeWhatsApp() {
       }
     });
 
-    // 4. GERENCIAR CONEXÃO
+    // 4. Gerenciar conexão
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
         console.log('📱 QR Code gerado');
-        await saveQRToSupabase(qr, 'qr');
+        await saveQRToSupabase(qr, 'waiting_scan');
       }
 
       if (connection === 'close') {
@@ -65,10 +78,10 @@ export async function initializeWhatsApp() {
         console.log('❌ Conexão fechada, reconectar?', shouldReconnect);
 
         if (shouldReconnect) {
-          // Aguardar 5 segundos antes de reconectar
-          setTimeout(() => initializeWhatsApp(), 5000);
+          console.log('⏳ Aguardando 5 segundos para reconectar...');
+          setTimeout(() => initializeBaileys(), 5000);
         } else {
-          // Usuário fez logout, limpar sessão
+          console.log('🚪 Usuário fez logout, limpando sessão');
           await clearSessionFromSupabase();
         }
       } else if (connection === 'open') {
@@ -80,6 +93,26 @@ export async function initializeWhatsApp() {
     return sock;
   } catch (error) {
     console.error('❌ Erro ao inicializar WhatsApp:', error);
+    throw error;
+  }
+}
+
+export async function sendMessage(phone, message) {
+  if (!sock) {
+    throw new Error('WhatsApp não está conectado');
+  }
+
+  try {
+    // Formatar número no padrão internacional
+    const formattedPhone = phone.includes('@s.whatsapp.net') 
+      ? phone 
+      : `${phone.replace(/\D/g, '')}@s.whatsapp.net`;
+
+    await sock.sendMessage(formattedPhone, { text: message });
+    console.log(`✅ Mensagem enviada para ${formattedPhone}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao enviar mensagem:', error);
     throw error;
   }
 }

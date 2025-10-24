@@ -1,43 +1,65 @@
 import express from 'express';
 import { initializeBaileys, sendMessage } from './baileys.js';
+import { getStatusFromSupabase, getQRFromSupabase } from './supabase.js';
 
 const app = express();
 app.use(express.json());
 
-// Inicializar Baileys
+// Inicializar WhatsApp na inicialização do servidor
+console.log('🚀 Iniciando servidor...');
 initializeBaileys().catch(console.error);
 
-// Endpoints
-app.get('/status', (req, res) => {
-  res.json(getStatus());
+// Health check
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'WhatsApp Baileys Server Running' });
 });
 
-app.post('/send-message', async (req, res) => {
+// Endpoint para pegar status e QR Code
+app.get('/status', async (req, res) => {
   try {
-    const { phone, message } = req.body;
-    await sendMessage(phone, message);
-    res.json({ success: true });
+    const status = await getStatusFromSupabase();
+    const qr = await getQRFromSupabase();
+    
+    res.json({ 
+      status, 
+      qr_code: qr 
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('❌ Erro ao buscar status:', error);
+    res.status(500).json({ 
+      error: 'Failed to get status',
+      message: error.message 
+    });
   }
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
+// Endpoint para enviar mensagem
+app.post('/send-message', async (req, res) => {
+  try {
+    const { phone, message } = req.body;
+
+    if (!phone || !message) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: phone and message' 
+      });
+    }
+
+    await sendMessage(phone, message);
+    
+    res.json({ 
+      success: true,
+      message: 'Message sent successfully' 
+    });
+  } catch (error) {
+    console.error('❌ Erro ao enviar mensagem:', error);
+    res.status(500).json({ 
+      error: 'Failed to send message',
+      message: error.message 
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🌐 Servidor rodando na porta ${PORT}`);
-});
-
-// Endpoint para checar status
-app.get('/status', async (req, res) => {
-  try {
-    const status = await getStatusFromSupabase();
-    res.json({ status });
-  } catch (error) {
-    console.error('Error getting status:', error);
-    res.status(500).json({ error: 'Failed to get status' });
-  }
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });

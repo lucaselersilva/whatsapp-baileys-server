@@ -84,6 +84,7 @@ export async function saveQRToSupabase(qrCode, status) {
       .eq('id', 1);
 
     if (error) throw error;
+    console.log(`✅ QR Code salvo (status: ${status})`);
     return true;
   } catch (error) {
     console.error('❌ Erro ao salvar QR:', error);
@@ -98,6 +99,7 @@ export async function updateStatusInSupabase(status) {
       .from('whatsapp_sessions')
       .update({ 
         status: status,
+        qr_code: status === 'connected' ? null : undefined,
         updated_at: new Date().toISOString()
       })
       .eq('id', 1);
@@ -111,7 +113,7 @@ export async function updateStatusInSupabase(status) {
   }
 }
 
-// Função para pegar o status do banco
+// BUSCAR STATUS
 export async function getStatusFromSupabase() {
   try {
     const { data, error } = await supabase
@@ -126,5 +128,23 @@ export async function getStatusFromSupabase() {
   } catch (error) {
     console.error('❌ Erro ao buscar status:', error);
     return 'disconnected';
+  }
+}
+
+// BUSCAR QR CODE
+export async function getQRFromSupabase() {
+  try {
+    const { data, error } = await supabase
+      .from('whatsapp_sessions')
+      .select('qr_code')
+      .eq('id', 1)
+      .single();
+
+    if (error) throw error;
+    
+    return data?.qr_code || null;
+  } catch (error) {
+    console.error('❌ Erro ao buscar QR:', error);
+    return null;
   }
 }
