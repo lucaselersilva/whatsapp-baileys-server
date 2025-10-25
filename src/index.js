@@ -1,107 +1,116 @@
 import express from 'express';
 import cors from 'cors';
-import { initializeBaileys } from './baileys.js';
-import { updateStatusInSupabase } from './supabase.js';
+import { initializeBaileys, disconnectTenant, sendMessage } from './baileys.js';
+import { supabase } from './supabase.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middlewares
 app.use(cors());
 app.use(express.json());
 
-
-
-
-// No início do arquivo, adicionar:
+// ===== HANDLERS DE ERRO GLOBAIS =====
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise);
-  console.error('❌ Reason:', reason);
+  console.error('❌ ===== UNHANDLED REJECTION =====');
+  console.error('Promise:', promise);
+  console.error('Reason:', reason);
+  console.error('Stack:', reason?.stack);
+  console.error('================================\n');
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
+  console.error('❌ ===== UNCAUGHT EXCEPTION =====');
+  console.error('Error:', error);
+  console.error('Stack:', error?.stack);
+  console.error('================================\n');
   process.exit(1);
 });
 
-
-// Map para gerenciar múltiplas conexões (uma por tenant)
-const activeSockets = new Map();
+// ===== ROTAS =====
 
 // Health check
 app.get('/health', (req, res) => {
   res.json({ 
-    status: 'ok', 
-    activeTenants: activeSockets.size,
-    tenants: Array.from(activeSockets.keys())
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    service: 'whatsapp-baileys-multi-tenant'
   });
 });
 
-// Conectar WhatsApp para um tenant específico
+// Conectar WhatsApp para um tenant
 app.post('/connect', async (req, res) => {
   const { tenant_id } = req.body;
+  
+  console.log(`\n📞 ===== REQUISIÇÃO DE CONEXÃO =====`);
+  console.log('Tenant ID:', tenant_id);
+  console.log('Timestamp:', new Date().toISOString());
+  console.log('====================================\n');
 
   if (!tenant_id) {
-    return res.status(400).json({ error: 'tenant_id é obrigatório' });
+    console.error('❌ Erro: tenant_id não fornecido');
+    return res.status(400).json({ 
+      error: 'tenant_id é obrigatório' 
+    });
   }
 
   try {
-    // Verificar se já existe conexão ativa para este tenant
-    if (activeSockets.has(tenant_id)) {
-      return res.json({ 
-        message: 'Conexão já ativa para este tenant',
-        tenant_id 
-      });
-    }
-
-    console.log(`🔌 Iniciando conexão para tenant ${tenant_id}`);
-
-    const sock = await initializeBaileys(
-      tenant_id,
-      (qr) => console.log(`📱 QR Code gerado para tenant ${tenant_id}`),
-      () => console.log(`✅ Tenant ${tenant_id} pronto`)
-    );
-
-    activeSockets.set(tenant_id, sock);
-
+    await initializeBaileys(tenant_id);
+    
     res.json({ 
-      message: 'Conexão iniciada com sucesso',
-      tenant_id
+      success: true, 
+      message: 'Conexão iniciada. Aguarde o QR Code.' 
     });
   } catch (error) {
     console.error(`❌ Erro ao conectar tenant ${tenant_id}:`, error);
-    res.status(500).json({ error: error.message });
+    
+    res.status(500).json({ 
+      error: 'Erro ao iniciar conexão',
+      details: error.message 
+    });
   }
 });
 
-// Desconectar WhatsApp de um tenant específico
+// Desconectar WhatsApp para um tenant
 app.post('/disconnect', async (req, res) => {
   const { tenant_id } = req.body;
+  
+  console.log(`\n🔌 ===== REQUISIÇÃO DE DESCONEXÃO =====`);
+  console.log('Tenant ID:', tenant_id);
+  console.log('=======================================\n');
 
   if (!tenant_id) {
-    return res.status(400).json({ error: 'tenant_id é obrigatório' });
+    return res.status(400).json({ 
+      error: 'tenant_id é obrigatório' 
+    });
   }
 
   try {
-    const sock = activeSockets.get(tenant_id);
+    const disconnected = await disconnectTenant(tenant_id);
     
-    if (!sock) {
-      return res.status(404).json({ error: 'Nenhuma conexão ativa para este tenant' });
-    }
-
-    await sock.logout();
-    activeSockets.delete(tenant_id);
-    await updateStatusInSupabase(tenant_id, 'disconnected');
-
-    res.json({ message: 'Desconectado com sucesso', tenant_id });
+    res.json({ 
+      success: disconnected,
+      message: disconnected ? 'Desconectado com sucesso' : 'Tenant não estava conectado'
+    });
   } catch (error) {
     console.error(`❌ Erro ao desconectar tenant ${tenant_id}:`, error);
-    res.status(500).json({ error: error.message });
+    
+    res.status(500).json({ 
+      error: 'Erro ao desconectar',
+      details: error.message 
+    });
   }
 });
 
-// Enviar mensagem (agora com tenant_id)
+// Enviar mensagem
 app.post('/send-message', async (req, res) => {
   const { tenant_id, phone, message } = req.body;
+  
+  console.log(`\n💬 ===== ENVIO DE MENSAGEM =====`);
+  console.log('Tenant:', tenant_id);
+  console.log('Phone:', phone);
+  console.log('Message:', message);
+  console.log('================================\n');
 
   if (!tenant_id || !phone || !message) {
     return res.status(400).json({ 
@@ -110,30 +119,28 @@ app.post('/send-message', async (req, res) => {
   }
 
   try {
-    const sock = activeSockets.get(tenant_id);
-
-    if (!sock) {
-      return res.status(404).json({ 
-        error: 'Nenhuma conexão ativa para este tenant. Execute /connect primeiro.' 
-      });
-    }
-
-    const formattedPhone = phone.replace(/\D/g, '') + '@s.whatsapp.net';
-    await sock.sendMessage(formattedPhone, { text: message });
-
+    await sendMessage(tenant_id, phone, message);
+    
     res.json({ 
-      success: true, 
-      message: 'Mensagem enviada com sucesso',
-      tenant_id,
-      phone 
+      success: true,
+      message: 'Mensagem enviada com sucesso' 
     });
   } catch (error) {
-    console.error(`❌ Erro ao enviar mensagem (tenant ${tenant_id}):`, error);
-    res.status(500).json({ error: error.message });
+    console.error(`❌ Erro ao enviar mensagem:`, error);
+    
+    res.status(500).json({ 
+      error: 'Erro ao enviar mensagem',
+      details: error.message 
+    });
   }
 });
 
+// Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor Railway rodando na porta ${PORT}`);
-  console.log(`📡 Suporte multi-tenant ativado`);
+  console.log(`\n🚀 ===== SERVIDOR INICIADO =====`);
+  console.log(`📡 Porta: ${PORT}`);
+  console.log(`🌐 URL: http://localhost:${PORT}`);
+  console.log(`🔐 Multi-tenant: ATIVADO`);
+  console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
+  console.log(`================================\n`);
 });
