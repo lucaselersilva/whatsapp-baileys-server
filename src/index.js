@@ -1,8 +1,17 @@
 import express from 'express';
-import { initializeBaileys, getSession, disconnectSession } from './baileys.js';
+import cors from 'cors';
+import { initializeBaileys, disconnectSession } from './baileys.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// CORS - permitir requisições do Lovable
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 
 // Middleware
 app.use(express.json());
@@ -33,22 +42,23 @@ app.get('/', (req, res) => {
   });
 });
 
-// Conectar WhatsApp (gerar QR Code)
+// Conectar WhatsApp
 app.post('/connect', async (req, res) => {
-  const { tenantId } = req.body;
+  const { tenant_id, tenantId } = req.body;
+  const finalTenantId = tenant_id || tenantId;
 
   console.log(`\n📞 ===== REQUISIÇÃO CONNECT =====`);
-  console.log(`   Tenant ID: ${tenantId}`);
+  console.log(`   Tenant ID: ${finalTenantId}`);
   console.log(`   IP: ${req.ip}`);
   console.log(`   Timestamp: ${new Date().toISOString()}`);
 
-  if (!tenantId) {
+  if (!finalTenantId) {
     console.log(`❌ Tenant ID não fornecido`);
-    return res.status(400).json({ error: 'tenantId é obrigatório' });
+    return res.status(400).json({ error: 'tenant_id ou tenantId é obrigatório' });
   }
 
   try {
-    await initializeBaileys(tenantId);
+    await initializeBaileys(finalTenantId);
     console.log(`✅ Inicialização bem-sucedida`);
     console.log(`================================\n`);
     res.json({ success: true, message: 'Inicializando conexão WhatsApp' });
@@ -64,26 +74,20 @@ app.post('/connect', async (req, res) => {
 
 // Desconectar WhatsApp
 app.post('/disconnect', async (req, res) => {
-  const { tenantId } = req.body;
+  const { tenant_id, tenantId } = req.body;
+  const finalTenantId = tenant_id || tenantId;
 
   console.log(`\n🔌 ===== REQUISIÇÃO DISCONNECT =====`);
-  console.log(`   Tenant ID: ${tenantId}`);
-  console.log(`   IP: ${req.ip}`);
-  console.log(`   Timestamp: ${new Date().toISOString()}`);
+  console.log(`   Tenant ID: ${finalTenantId}`);
 
-  if (!tenantId) {
-    console.log(`❌ Tenant ID não fornecido`);
-    return res.status(400).json({ error: 'tenantId é obrigatório' });
+  if (!finalTenantId) {
+    return res.status(400).json({ error: 'tenant_id ou tenantId é obrigatório' });
   }
 
   try {
-    await disconnectSession(tenantId);
-    console.log(`✅ Desconexão bem-sucedida`);
-    console.log(`===================================\n`);
+    await disconnectSession(finalTenantId);
     res.json({ success: true, message: 'Desconectado com sucesso' });
   } catch (error) {
-    console.error(`❌ Erro na desconexão:`, error);
-    console.log(`===================================\n`);
     res.status(500).json({ 
       error: 'Erro ao desconectar WhatsApp',
       details: error.message 
@@ -91,23 +95,13 @@ app.post('/disconnect', async (req, res) => {
   }
 });
 
-// Status da sessão
-app.get('/status/:tenantId', (req, res) => {
-  const { tenantId } = req.params;
-  const session = getSession(tenantId);
-  
-  res.json({
-    connected: !!session,
-    tenantId
-  });
-});
-
 // Iniciar servidor
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 ===== SERVIDOR INICIADO =====`);
   console.log(`📡 Porta: ${PORT}`);
-  console.log(`🌐 URL: http://localhost:${PORT}`);
+  console.log(`🌐 URL: http://0.0.0.0:${PORT}`);
   console.log(`🔐 Multi-tenant: ATIVADO`);
+  console.log(`🌍 CORS: HABILITADO`);
   console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
   console.log(`================================\n`);
 });
