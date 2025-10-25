@@ -1,118 +1,104 @@
 import makeWASocket, { 
   DisconnectReason, 
   useMultiFileAuthState,
-  fetchLatestBaileysVersion 
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion
 } from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
+import NodeCache from 'node-cache';
+import pino from 'pino';
 import { 
   saveSessionToSupabase, 
-  loadSessionFromSupabase,
-  clearSessionFromSupabase,
+  loadSessionFromSupabase, 
+  updateStatusInSupabase,
   saveQRToSupabase,
-  updateStatusInSupabase 
+  clearSessionFromSupabase
 } from './supabase.js';
 
-let sock = null;
+const msgRetryCounterCache = new NodeCache();
+const logger = pino({ level: 'silent' });
 
-export async function initializeBaileys() {
+export async function initializeBaileys(tenantId, onQR, onReady) {
+  console.log(`🚀 Inicializando Baileys para tenant ${tenantId}...`);
+
   try {
-    console.log('🔄 Inicializando WhatsApp...');
+    // Carregar sessão do Supabase
+    const savedCreds = await loadSessionFromSupabase(tenantId);
     
-    // 1. Tentar carregar sessão do Supabase
-    const savedSession = await loadSessionFromSupabase();
-    
-    // 2. Usar sessão salva ou criar nova
-    const { state, saveCreds } = savedSession && savedSession.creds
-      ? { 
-          state: savedSession, 
-          saveCreds: async () => {
-            console.log('📝 Salvando credenciais...');
-            const currentState = {
-              creds: sock.authState.creds,
-              keys: sock.authState.keys
-            };
-            await saveSessionToSupabase(currentState);
-          }
-        }
-      : await useMultiFileAuthState('./auth_temp');
+    let state;
+    if (savedCreds) {
+      console.log(`📦 Usando sessão salva para tenant ${tenantId}`);
+      state = {
+        creds: savedCreds.creds || {},
+        keys: savedCreds.keys || {}
+      };
+    } else {
+      console.log(`🆕 Criando nova sessão para tenant ${tenantId}`);
+      state = {
+        creds: {},
+        keys: {}
+      };
+    }
 
     const { version } = await fetchLatestBaileysVersion();
 
-    sock = makeWASocket({
+    const sock = makeWASocket({
       version,
-      auth: state,
+      logger,
       printQRInTerminal: false,
-      browser: ['WhatsApp Business', 'Chrome', '4.0.0'],
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger)
+      },
+      msgRetryCounterCache,
+      generateHighQualityLinkPreview: true,
     });
 
-    // 3. Salvar credenciais no Supabase quando mudarem
+    // Salvar credenciais quando atualizadas
     sock.ev.on('creds.update', async () => {
-      console.log('🔐 Credenciais atualizadas');
-      
-      try {
-        const currentState = {
-          creds: sock.authState.creds,
-          keys: sock.authState.keys
-        };
-        
-        await saveSessionToSupabase(currentState);
-        console.log('✅ Sessão salva no Supabase');
-      } catch (error) {
-        console.error('❌ Erro ao salvar sessão:', error);
-      }
+      const sessionData = {
+        creds: sock.authState.creds,
+        keys: {}
+      };
+      await saveSessionToSupabase(tenantId, sessionData);
     });
 
-    // 4. Gerenciar conexão
+    // Gerenciar conexão
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log('📱 QR Code gerado');
-        await saveQRToSupabase(qr, 'waiting_scan');
+        console.log(`📱 QR Code gerado para tenant ${tenantId}`);
+        await saveQRToSupabase(tenantId, qr);
+        if (onQR) onQR(qr);
+      }
+
+      if (connection === 'open') {
+        console.log(`✅ WhatsApp conectado para tenant ${tenantId}!`);
+        await updateStatusInSupabase(tenantId, 'ready');
+        if (onReady) onReady();
       }
 
       if (connection === 'close') {
-        const shouldReconnect = 
-          lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-        console.log('❌ Conexão fechada, reconectar?', shouldReconnect);
+        console.log(`❌ Conexão fechada para tenant ${tenantId}, código:`, statusCode);
+        await updateStatusInSupabase(tenantId, 'disconnected');
 
         if (shouldReconnect) {
-          console.log('⏳ Aguardando 5 segundos para reconectar...');
-          setTimeout(() => initializeBaileys(), 5000);
+          console.log(`🔄 Reconectando tenant ${tenantId} em 5 segundos...`);
+          setTimeout(() => initializeBaileys(tenantId, onQR, onReady), 5000);
         } else {
-          console.log('🚪 Usuário fez logout, limpando sessão');
-          await clearSessionFromSupabase();
+          console.log(`🚪 Logout detectado para tenant ${tenantId}`);
+          await clearSessionFromSupabase(tenantId);
         }
-      } else if (connection === 'open') {
-        console.log('✅ WhatsApp conectado!');
-        await updateStatusInSupabase('connected');
       }
     });
 
     return sock;
   } catch (error) {
-    console.error('❌ Erro ao inicializar WhatsApp:', error);
-    throw error;
-  }
-}
-
-export async function sendMessage(phone, message) {
-  if (!sock) {
-    throw new Error('WhatsApp não está conectado');
-  }
-
-  try {
-    // Formatar número no padrão internacional
-    const formattedPhone = phone.includes('@s.whatsapp.net') 
-      ? phone 
-      : `${phone.replace(/\D/g, '')}@s.whatsapp.net`;
-
-    await sock.sendMessage(formattedPhone, { text: message });
-    console.log(`✅ Mensagem enviada para ${formattedPhone}`);
-    return true;
-  } catch (error) {
-    console.error('❌ Erro ao enviar mensagem:', error);
+    console.error(`❌ Erro ao inicializar Baileys para tenant ${tenantId}:`, error);
+    await updateStatusInSupabase(tenantId, 'disconnected');
     throw error;
   }
 }
