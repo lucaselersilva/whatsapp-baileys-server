@@ -3,7 +3,27 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+console.log('🔧 Inicializando Supabase Client:');
+console.log('   URL:', supabaseUrl);
+console.log('   Key exists:', !!supabaseKey);
+console.log('   Key length:', supabaseKey?.length || 0);
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error('❌ ERRO: Variáveis de ambiente do Supabase não configuradas!');
+  console.error('   SUPABASE_URL:', !!supabaseUrl);
+  console.error('   SUPABASE_SERVICE_ROLE_KEY:', !!supabaseKey);
+  throw new Error('Configuração do Supabase incompleta');
+}
+
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
+
+console.log('✅ Supabase Client inicializado com sucesso');
+
 
 export async function saveSessionToSupabase(tenantId, sessionData) {
   try {
