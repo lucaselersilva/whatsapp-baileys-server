@@ -1,160 +1,136 @@
-import makeWASocket, { 
-  DisconnectReason, 
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion 
-} from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
-import P from 'pino';
-import QRCode from 'qrcode';
-import { 
-  saveQRToSupabase, 
-  updateSessionStatus, 
-  loadSessionFromSupabase,
-  saveSessionToSupabase 
-} from './supabase.js';
+import qrcode from 'qrcode-terminal';
+import pino from 'pino';
+import { saveQRToSupabase, updateSessionStatus, loadSessionFromSupabase, saveSessionToSupabase } from './supabase.js';
 
-// Store das conexões ativas por tenant
-const activeConnections = new Map();
+const sessions = new Map();
 
-const logger = P({ level: 'info' });
+const logger = pino({ level: 'silent' });
 
-/**
- * Inicializa conexão Baileys para um tenant específico
- */
 export async function initializeBaileys(tenantId) {
-  console.log(`\n🚀 ===== Inicializando Baileys para tenant: ${tenantId} =====`);
+  console.log(`\n🚀 ===== INICIALIZANDO BAILEYS =====`);
+  console.log(`   Tenant ID: ${tenantId}`);
+  console.log(`   Timestamp: ${new Date().toISOString()}`);
   
   try {
-    // Verificar se já existe uma conexão ativa
-    if (activeConnections.has(tenantId)) {
-      console.log(`⚠️ Tenant ${tenantId} já possui uma conexão ativa`);
-      return activeConnections.get(tenantId);
+    // Verificar se já existe uma sessão ativa
+    if (sessions.has(tenantId)) {
+      console.log(`⚠️  Sessão já existe para tenant: ${tenantId}`);
+      return sessions.get(tenantId);
     }
 
-    // Carregar sessão existente do Supabase
-    const existingSession = await loadSessionFromSupabase(tenantId);
-    
-    // Usar auth state em memória (não em arquivo)
+    // Carregar dados da sessão do Supabase (se existir)
+    const savedSession = await loadSessionFromSupabase(tenantId);
+    console.log(`   Sessão salva encontrada? ${!!savedSession}`);
+
+    // Configurar autenticação multi-arquivo
     const { state, saveCreds } = await useMultiFileAuthState(`./sessions/${tenantId}`);
-    
-    // Obter versão mais recente do Baileys
-    const { version } = await fetchLatestBaileysVersion();
-    console.log(`📱 Usando WA versão: ${version.join('.')}`);
 
     // Criar socket do WhatsApp
+    console.log(`   Criando socket WhatsApp...`);
     const sock = makeWASocket({
-      version,
-      logger,
-      printQRInTerminal: false, // Não imprimir no terminal
       auth: state,
-      generateHighQualityLinkPreview: true
+      printQRInTerminal: false,
+      logger,
     });
 
-    // Handler: Atualização de credenciais
-    sock.ev.on('creds.update', async () => {
-      await saveCreds();
-      console.log(`💾 Credenciais atualizadas para tenant ${tenantId}`);
-    });
-
-    // Handler: Atualização de conexão
+    // Evento: QR Code gerado
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
-      
-      console.log(`🔄 Status de conexão para ${tenantId}:`, connection);
 
-      // QR Code gerado
+      console.log(`\n📡 CONNECTION UPDATE:`, {
+        connection,
+        hasQR: !!qr,
+        timestamp: new Date().toISOString()
+      });
+
       if (qr) {
-        console.log(`📱 QR Code gerado para tenant ${tenantId}`);
-        try {
-          const qrCodeDataURL = await QRCode.toDataURL(qr);
-          await saveQRToSupabase(tenantId, qrCodeDataURL);
-          console.log(`✅ QR Code salvo no Supabase para tenant ${tenantId}`);
-        } catch (err) {
-          console.error(`❌ Erro ao salvar QR Code para ${tenantId}:`, err);
-        }
-      }
-
-      // Conexão aberta (conectado)
-      if (connection === 'open') {
-        console.log(`✅ WhatsApp conectado para tenant ${tenantId}`);
-        await updateSessionStatus(tenantId, 'connected');
+        console.log(`\n📱 ===== QR CODE GERADO =====`);
+        console.log(`   Tenant: ${tenantId}`);
+        console.log(`   QR length: ${qr.length}`);
         
-        // Salvar sessão completa
+        // Mostrar QR no terminal (para debug)
+        qrcode.generate(qr, { small: true });
+        
+        // Salvar QR Code no Supabase
         try {
-          await saveSessionToSupabase(tenantId, state.creds);
-        } catch (err) {
-          console.error(`❌ Erro ao salvar sessão para ${tenantId}:`, err);
+          await saveQRToSupabase(tenantId, qr);
+          console.log(`✅ QR Code salvo no Supabase`);
+        } catch (error) {
+          console.error(`❌ Erro ao salvar QR Code:`, error);
         }
+        console.log(`============================\n`);
       }
 
-      // Conexão fechada
       if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log(`\n🔴 Conexão fechada para tenant: ${tenantId}`);
         
-        console.log(`❌ Conexão fechada para ${tenantId}. Código: ${statusCode}`);
-        console.log(`🔄 Deve reconectar? ${shouldReconnect ? 'SIM' : 'NÃO'}`);
+        const shouldReconnect = (lastDisconnect?.error instanceof Boom) &&
+          lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
+
+        console.log(`   Motivo:`, lastDisconnect?.error);
+        console.log(`   Deve reconectar? ${shouldReconnect}`);
 
         if (shouldReconnect) {
-          await updateSessionStatus(tenantId, 'reconnecting');
-          setTimeout(() => initializeBaileys(tenantId), 5000);
+          console.log(`   Reconectando...`);
+          initializeBaileys(tenantId);
         } else {
+          console.log(`   Removendo sessão...`);
+          sessions.delete(tenantId);
           await updateSessionStatus(tenantId, 'disconnected');
-          activeConnections.delete(tenantId);
         }
+      } else if (connection === 'open') {
+        console.log(`\n✅ ===== CONEXÃO ESTABELECIDA =====`);
+        console.log(`   Tenant: ${tenantId}`);
+        console.log(`   Timestamp: ${new Date().toISOString()}`);
+        console.log(`==================================\n`);
+        
+        await updateSessionStatus(tenantId, 'connected');
       }
     });
 
-    // Handler: Mensagens recebidas
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-      console.log(`📨 Mensagem recebida para tenant ${tenantId}:`, messages.length);
-      // Aqui você pode processar mensagens recebidas
+    // Salvar credenciais quando atualizadas
+    sock.ev.on('creds.update', async () => {
+      await saveCreds();
+      console.log(`💾 Credenciais atualizadas para tenant: ${tenantId}`);
     });
 
-    // Armazenar conexão ativa
-    activeConnections.set(tenantId, sock);
-    console.log(`✅ Conexão armazenada para tenant ${tenantId}`);
+    // Armazenar sessão
+    sessions.set(tenantId, sock);
+    console.log(`✅ Sessão criada e armazenada`);
+    console.log(`==================================\n`);
 
     return sock;
   } catch (error) {
-    console.error(`❌ Erro crítico ao inicializar Baileys para tenant ${tenantId}:`, error);
-    await updateSessionStatus(tenantId, 'error');
+    console.error(`\n❌ ===== ERRO AO INICIALIZAR BAILEYS =====`);
+    console.error(`   Tenant: ${tenantId}`);
+    console.error(`   Erro:`, error);
+    console.error(`   Stack:`, error.stack);
+    console.error(`=========================================\n`);
     throw error;
   }
 }
 
-/**
- * Desconecta um tenant específico
- */
-export async function disconnectTenant(tenantId) {
-  console.log(`🔌 Desconectando tenant: ${tenantId}`);
-  
-  const sock = activeConnections.get(tenantId);
-  if (sock) {
-    await sock.logout();
-    activeConnections.delete(tenantId);
-    await updateSessionStatus(tenantId, 'disconnected');
-    console.log(`✅ Tenant ${tenantId} desconectado com sucesso`);
-    return true;
-  }
-  
-  console.log(`⚠️ Tenant ${tenantId} não possui conexão ativa`);
-  return false;
+export function getSession(tenantId) {
+  return sessions.get(tenantId);
 }
 
-/**
- * Envia mensagem para um número específico
- */
-export async function sendMessage(tenantId, phoneNumber, message) {
-  const sock = activeConnections.get(tenantId);
+export async function disconnectSession(tenantId) {
+  console.log(`\n🔌 Desconectando sessão para tenant: ${tenantId}`);
   
-  if (!sock) {
-    throw new Error(`Tenant ${tenantId} não está conectado`);
+  const sock = sessions.get(tenantId);
+  if (sock) {
+    try {
+      await sock.logout();
+      sessions.delete(tenantId);
+      await updateSessionStatus(tenantId, 'disconnected');
+      console.log(`✅ Sessão desconectada com sucesso`);
+    } catch (error) {
+      console.error(`❌ Erro ao desconectar:`, error);
+      throw error;
+    }
+  } else {
+    console.log(`⚠️  Nenhuma sessão ativa encontrada`);
   }
-
-  const jid = `${phoneNumber}@s.whatsapp.net`;
-  await sock.sendMessage(jid, { text: message });
-  
-  console.log(`✅ Mensagem enviada para ${phoneNumber} via tenant ${tenantId}`);
-  return true;
 }

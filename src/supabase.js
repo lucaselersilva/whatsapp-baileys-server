@@ -3,16 +3,17 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-console.log('🔧 Inicializando Supabase Client:');
+console.log('🔧 ===== INICIALIZANDO SUPABASE CLIENT =====');
 console.log('   URL:', supabaseUrl);
-console.log('   Key exists:', !!supabaseKey);
+console.log('   Key existe?', !!supabaseKey);
 console.log('   Key length:', supabaseKey?.length || 0);
+console.log('   Key prefix:', supabaseKey?.substring(0, 20) + '...');
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ ERRO CRÍTICO: Variáveis de ambiente do Supabase não configuradas!');
+  console.error('❌ ERRO CRÍTICO: Variáveis de ambiente não configuradas!');
   console.error('   SUPABASE_URL:', supabaseUrl || 'MISSING');
   console.error('   SUPABASE_SERVICE_ROLE_KEY:', supabaseKey ? 'EXISTS' : 'MISSING');
-  throw new Error('Configuração do Supabase incompleta - configure as variáveis de ambiente');
+  throw new Error('❌ Configuração do Supabase incompleta');
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -23,144 +24,145 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 console.log('✅ Supabase Client inicializado com sucesso');
+console.log('=========================================\n');
 
-/**
- * Salva o QR Code no Supabase para um tenant específico
- */
+// Função para salvar QR Code no Supabase
 export async function saveQRToSupabase(tenantId, qrCode) {
-  console.log('📝 Salvando QR Code no Supabase:', { 
-    tenantId, 
-    qrCodeLength: qrCode?.length,
-    timestamp: new Date().toISOString()
-  });
+  console.log('📝 ===== SALVANDO QR CODE =====');
+  console.log('   Tenant ID:', tenantId);
+  console.log('   QR Code length:', qrCode?.length || 0);
   
   try {
-    // Primeiro, verificar se já existe um registro
+    // Primeiro, verificar se já existe um registro para este tenant
     const { data: existing, error: selectError } = await supabase
       .from('whatsapp_sessions')
-      .select('id, tenant_id')
+      .select('id')
       .eq('tenant_id', tenantId)
       .maybeSingle();
 
     if (selectError) {
-      console.error('❌ Erro ao verificar sessão existente:', selectError);
+      console.error('❌ Erro ao verificar registro existente:', selectError);
       throw selectError;
     }
 
-    console.log('🔍 Sessão existente:', existing ? 'SIM' : 'NÃO');
+    console.log('   Registro existente?', !!existing);
 
     let result;
-    
+
     if (existing) {
-      // Atualizar registro existente
-      console.log('🔄 Atualizando sessão existente...');
+      // UPDATE - registro já existe
+      console.log('   Executando UPDATE...');
       const { data, error } = await supabase
         .from('whatsapp_sessions')
-        .update({ 
-          qr_code: qrCode, 
+        .update({
+          qr_code: qrCode,
           status: 'qr_code_ready',
           updated_at: new Date().toISOString()
         })
         .eq('tenant_id', tenantId)
         .select();
-      
-      if (error) throw error;
+
+      if (error) {
+        console.error('❌ Erro no UPDATE:', error);
+        throw error;
+      }
+
       result = data;
+      console.log('✅ UPDATE executado com sucesso');
     } else {
-      // Inserir novo registro
-      console.log('➕ Inserindo nova sessão...');
+      // INSERT - criar novo registro
+      console.log('   Executando INSERT...');
       const { data, error } = await supabase
         .from('whatsapp_sessions')
-        .insert({ 
+        .insert({
           tenant_id: tenantId,
-          qr_code: qrCode, 
+          qr_code: qrCode,
           status: 'qr_code_ready',
           updated_at: new Date().toISOString()
         })
         .select();
-      
-      if (error) throw error;
+
+      if (error) {
+        console.error('❌ Erro no INSERT:', error);
+        throw error;
+      }
+
       result = data;
+      console.log('✅ INSERT executado com sucesso');
     }
+
+    console.log('   Resultado:', JSON.stringify(result, null, 2));
+    console.log('================================\n');
     
-    console.log('✅ QR Code salvo com sucesso:', result);
     return result;
   } catch (err) {
-    console.error('❌ Exceção ao salvar QR Code:', {
-      error: err.message,
-      code: err.code,
-      details: err.details,
-      hint: err.hint
-    });
+    console.error('❌ EXCEÇÃO ao salvar QR Code:', err);
+    console.error('   Stack:', err.stack);
+    console.log('================================\n');
     throw err;
   }
 }
 
-/**
- * Atualiza o status da sessão WhatsApp
- */
-export async function updateSessionStatus(tenantId, status, sessionData = null) {
-  console.log('🔄 Atualizando status da sessão:', { tenantId, status });
+// Função para atualizar status da sessão
+export async function updateSessionStatus(tenantId, status) {
+  console.log(`📊 Atualizando status para tenant ${tenantId}: ${status}`);
   
   try {
-    const updateData = {
-      status,
-      updated_at: new Date().toISOString()
-    };
-
-    if (sessionData) {
-      updateData.session_data = sessionData;
-    }
-
-    // Se o status for 'connected', limpar o QR code
-    if (status === 'connected') {
-      updateData.qr_code = null;
-    }
-
     const { data, error } = await supabase
       .from('whatsapp_sessions')
-      .update(updateData)
+      .update({
+        status: status,
+        updated_at: new Date().toISOString(),
+        ...(status === 'connected' && { qr_code: null })
+      })
       .eq('tenant_id', tenantId)
       .select();
-    
-    if (error) throw error;
-    
-    console.log('✅ Status atualizado com sucesso:', data);
+
+    if (error) {
+      console.error('❌ Erro ao atualizar status:', error);
+      throw error;
+    }
+
+    console.log('✅ Status atualizado:', data);
     return data;
   } catch (err) {
-    console.error('❌ Erro ao atualizar status:', err);
+    console.error('❌ Exceção ao atualizar status:', err);
     throw err;
   }
 }
 
-/**
- * Carrega a sessão do Supabase
- */
+// Função para carregar sessão do Supabase
 export async function loadSessionFromSupabase(tenantId) {
-  console.log('📥 Carregando sessão do Supabase para tenant:', tenantId);
+  console.log(`📂 Carregando sessão para tenant: ${tenantId}`);
   
   try {
     const { data, error } = await supabase
       .from('whatsapp_sessions')
-      .select('session_data, status')
+      .select('session_data')
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    
-    if (error) throw error;
-    
-    console.log('✅ Sessão carregada:', data ? 'COM DADOS' : 'VAZIA');
-    return data?.session_data || null;
-  } catch (err) {
-    console.error('❌ Erro ao carregar sessão:', err);
+
+    if (error) {
+      console.error('❌ Erro ao carregar sessão:', error);
+      throw error;
+    }
+
+    if (data?.session_data) {
+      console.log('✅ Sessão encontrada no banco de dados');
+      return data.session_data;
+    }
+
+    console.log('ℹ️  Nenhuma sessão encontrada');
     return null;
+  } catch (err) {
+    console.error('❌ Exceção ao carregar sessão:', err);
+    throw err;
   }
 }
 
-/**
- * Salva a sessão no Supabase
- */
+// Função para salvar dados da sessão
 export async function saveSessionToSupabase(tenantId, sessionData) {
-  console.log('💾 Salvando sessão no Supabase para tenant:', tenantId);
+  console.log(`💾 Salvando dados da sessão para tenant: ${tenantId}`);
   
   try {
     const { data, error } = await supabase
@@ -171,13 +173,16 @@ export async function saveSessionToSupabase(tenantId, sessionData) {
       })
       .eq('tenant_id', tenantId)
       .select();
-    
-    if (error) throw error;
-    
+
+    if (error) {
+      console.error('❌ Erro ao salvar sessão:', error);
+      throw error;
+    }
+
     console.log('✅ Sessão salva com sucesso');
     return data;
   } catch (err) {
-    console.error('❌ Erro ao salvar sessão:', err);
+    console.error('❌ Exceção ao salvar sessão:', err);
     throw err;
   }
 }
