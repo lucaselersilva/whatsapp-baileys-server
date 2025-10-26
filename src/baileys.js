@@ -265,10 +265,10 @@ export async function sendWhatsAppMessage(tenantId, phoneNumber, message) {
       throw new Error('Sessão WhatsApp não encontrada. Conecte-se primeiro.');
     }
 
-    // Verificar se a conexão está aberta
-    if (sock.ws?.readyState !== 1) {
-      console.error(`❌ Conexão não está aberta (readyState: ${sock.ws?.readyState})`);
-      throw new Error('Conexão WhatsApp não está ativa. Reconecte e tente novamente.');
+    // ✅ CORREÇÃO: Verificar se está autenticado usando sock.user
+    if (!sock.user) {
+      console.error(`❌ Conexão não está autenticada (sock.user: ${sock.user})`);
+      throw new Error('Conexão WhatsApp não está autenticada. Reconecte e tente novamente.');
     }
 
     // Formatar número para JID
