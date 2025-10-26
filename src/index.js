@@ -110,12 +110,20 @@ async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
     const { data: aiResponse, error: aiError } = await supabase.functions.invoke('chat-assistant', {
       body: {
         client_id: client.id,
-        message: text
+        message: text,
+        tenant_id: tenantId // ✅ ADICIONADO
+      },
+      headers: {
+        Authorization: `Bearer ${supabaseServiceKey}` // ✅ ADICIONADO
       }
     });
 
     if (aiError) {
-      console.error(`❌ Erro ao chamar chat-assistant:`, aiError);
+      console.error(`❌ Erro ao chamar chat-assistant:`, {
+        message: aiError.message,
+        details: aiError.details,
+        status: aiError.status
+      });
       throw aiError;
     }
 
