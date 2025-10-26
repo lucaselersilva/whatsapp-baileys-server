@@ -92,6 +92,9 @@ export async function initializeBaileys(tenantId, onMessage = null) {
             // Ignorar status broadcast
             if (msg.key.remoteJid === 'status@broadcast') continue;
 
+            // ✅ NOVO: Ignorar mensagens de grupos
+            if (msg.key.remoteJid.endsWith('@g.us')) continue;
+
             // Extrair texto da mensagem
             const messageText = msg.message?.conversation || 
                                msg.message?.extendedTextMessage?.text || 
