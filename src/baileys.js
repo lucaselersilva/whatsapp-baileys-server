@@ -70,180 +70,171 @@ export async function initializeBaileys(tenantId, onMessage = null) {
     console.log(`   Criando socket WhatsApp...`);
     const sock = makeWASocket({
       version,
-      auth: state,
-      printQRInTerminal: false,
       logger,
-      browser: ['WhatsApp Multi-tenant', 'Chrome', '120.0.0'],
-      connectTimeoutMs: 60000, // 60 segundos
-      defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
+      printQRInTerminal: false,
+      auth: state,
+      defaultQueryTimeoutMs: undefined,
+      syncFullHistory: false,
+      generateHighQualityLinkPreview: false,
     });
-
     console.log(`   Socket criado com sucesso`);
 
-    // ========== NOVO: Capturar mensagens recebidas ==========
-    if (onMessage) {
-      sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        try {
-          for (const msg of messages) {
-            // Ignorar mensagens enviadas por nós
-            if (msg.key.fromMe) continue;
-            
-            // Ignorar status broadcast
-            if (msg.key.remoteJid === 'status@broadcast') continue;
+    // Salvar credenciais quando atualizadas
+    sock.ev.on('creds.update', saveCreds);
 
-            // Extrair texto da mensagem
-            const messageText = msg.message?.conversation || 
-                               msg.message?.extendedTextMessage?.text || 
-                               '';
-
-            if (!messageText) continue;
-
-            console.log(`\n📩 ===== MENSAGEM RECEBIDA =====`);
-            console.log(`   Tenant: ${tenantId}`);
-            console.log(`   De: ${msg.key.remoteJid}`);
-            console.log(`   Texto: ${messageText.substring(0, 50)}...`);
-            console.log(`   Timestamp: ${new Date().toISOString()}`);
-            console.log(`===============================\n`);
-
-            // Chamar callback com os dados da mensagem
-            await onMessage({
-              tenantId,
-              from: msg.key.remoteJid,
-              text: messageText,
-              timestamp: msg.messageTimestamp
-            });
-          }
-        } catch (error) {
-          console.error(`❌ Erro ao processar mensagem:`, error);
-        }
-      });
-      console.log(`✅ Listener de mensagens registrado`);
-    }
-
-    // Evento: QR Code gerado
+    // ========== LISTENER DE CONEXÃO ==========
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
-
-      console.log(`\n📡 ===== CONNECTION UPDATE =====`);
-      console.log(`   Connection: ${connection}`);
+      console.log(`\n🔄 ===== CONNECTION UPDATE =====`);
+      console.log(`   Tenant: ${tenantId}`);
+      console.log(`   Status: ${connection || 'unknown'}`);
       console.log(`   Has QR: ${!!qr}`);
-      console.log(`   Timestamp: ${new Date().toISOString()}`);
 
       if (qr) {
-        console.log(`\n📱 ===== QR CODE GERADO =====`);
-        console.log(`   Tenant: ${tenantId}`);
-        console.log(`   QR length: ${qr.length}`);
-        console.log(`   QR preview: ${qr.substring(0, 50)}...`);
-        
-        // Mostrar QR no terminal (para debug)
+        console.log(`   📱 QR Code gerado:`);
         qrcode.generate(qr, { small: true });
         
-        // Salvar QR Code no Supabase
         try {
-          const result = await saveQRToSupabase(tenantId, qr);
-          console.log(`✅ QR Code salvo no Supabase:`, result);
+          await saveQRToSupabase(tenantId, qr);
+          console.log(`   ✅ QR salvo no Supabase`);
         } catch (error) {
-          console.error(`❌ Erro ao salvar QR Code:`, error);
+          console.error(`   ❌ Erro ao salvar QR:`, error);
         }
-        console.log(`============================\n`);
       }
 
       if (connection === 'close') {
-        console.log(`\n🔴 ===== CONEXÃO FECHADA =====`);
-        console.log(`   Tenant: ${tenantId}`);
-        
-        const statusCode = (lastDisconnect?.error instanceof Boom) 
-          ? lastDisconnect.error.output.statusCode 
-          : null;
-        
+        const statusCode = lastDisconnect?.error instanceof Boom
+          ? lastDisconnect.error.output.statusCode
+          : undefined;
+
+        console.log(`   🔴 Conexão fechada`);
         console.log(`   Status Code: ${statusCode}`);
-        console.log(`   Reason:`, lastDisconnect?.error);
-
+        
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-        console.log(`   Deve reconectar? ${shouldReconnect}`);
+        console.log(`   Deve reconectar: ${shouldReconnect}`);
 
         if (shouldReconnect) {
-          console.log(`   ♻️  Reconectando em 5 segundos...`);
+          console.log(`   🔄 Reconectando...`);
           setTimeout(() => {
-            sessions.delete(tenantId);
-            initializeBaileys(tenantId, onMessage); // Passar callback na reconexão
-          }, 5000);
+            initializeBaileys(tenantId, onMessage);
+          }, 3000);
         } else {
-          console.log(`   Removendo sessão (logout)...`);
+          console.log(`   ⚠️  Logout detectado - não reconectar`);
           sessions.delete(tenantId);
-          await updateSessionStatus(tenantId, 'disconnected');
+          
+          try {
+            await updateSessionStatus(tenantId, 'disconnected');
+            console.log(`   ✅ Status atualizado no Supabase`);
+          } catch (error) {
+            console.error(`   ❌ Erro ao atualizar status:`, error);
+          }
         }
-        console.log(`==============================\n`);
-      } else if (connection === 'open') {
-        console.log(`\n✅ ===== CONEXÃO ESTABELECIDA =====`);
-        console.log(`   Tenant: ${tenantId}`);
-        console.log(`   Timestamp: ${new Date().toISOString()}`);
-        console.log(`==================================\n`);
+      }
+
+      if (connection === 'open') {
+        console.log(`   ✅ Conexão estabelecida com sucesso!`);
+        console.log(`   User ID: ${sock.user?.id}`);
+        console.log(`   User Name: ${sock.user?.name}`);
         
-        await updateSessionStatus(tenantId, 'connected');
-      } else if (connection === 'connecting') {
-        console.log(`   🔄 Conectando...`);
+        sessions.set(tenantId, sock);
+        
+        try {
+          await updateSessionStatus(tenantId, 'connected');
+          console.log(`   ✅ Status atualizado no Supabase`);
+        } catch (error) {
+          console.error(`   ❌ Erro ao atualizar status:`, error);
+        }
       }
+
+      console.log(`================================\n`);
     });
 
-    // Salvar credenciais quando atualizadas
-    sock.ev.on('creds.update', async () => {
-      try {
-        await saveCreds();
-        console.log(`💾 Credenciais atualizadas para tenant: ${tenantId}`);
-      } catch (error) {
-        console.error(`❌ Erro ao salvar credenciais:`, error);
-      }
-    });
+    // ========== NOVO: LISTENER DE MENSAGENS RECEBIDAS ==========
+    if (onMessage) {
+      sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        console.log(`\n📨 ===== MENSAGEM RECEBIDA =====`);
+        console.log(`   Tenant: ${tenantId}`);
+        console.log(`   Type: ${type}`);
+        console.log(`   Messages count: ${messages.length}`);
 
-    // Armazenar sessão
-    sessions.set(tenantId, sock);
-    console.log(`✅ Sessão criada e armazenada`);
-    console.log(`==================================\n`);
+        for (const msg of messages) {
+          // Ignorar mensagens próprias e de status
+          if (msg.key.fromMe || msg.key.remoteJid === 'status@broadcast') {
+            console.log(`   ⏭️  Ignorando mensagem (fromMe: ${msg.key.fromMe})`);
+            continue;
+          }
 
+          const from = msg.key.remoteJid; // Ex: 5531997655064@s.whatsapp.net
+          const text = msg.message?.conversation || 
+                      msg.message?.extendedTextMessage?.text || 
+                      '';
+
+          console.log(`   From: ${from}`);
+          console.log(`   Text: ${text}`);
+
+          // Chamar callback se fornecido
+          if (text && onMessage) {
+            try {
+              console.log(`   🔄 Chamando onMessage callback...`);
+              await onMessage(tenantId, from, text);
+              console.log(`   ✅ Callback executado com sucesso`);
+            } catch (error) {
+              console.error(`   ❌ Erro no callback onMessage:`, error);
+            }
+          }
+        }
+
+        console.log(`================================\n`);
+      });
+    }
+
+    console.log(`✅ Baileys inicializado com sucesso`);
+    console.log(`===================================\n`);
+    
     return sock;
   } catch (error) {
-    console.error(`\n❌ ===== ERRO AO INICIALIZAR BAILEYS =====`);
+    console.error(`\n❌ ===== ERRO NA INICIALIZAÇÃO =====`);
     console.error(`   Tenant: ${tenantId}`);
     console.error(`   Erro:`, error);
     console.error(`   Stack:`, error.stack);
-    console.error(`=========================================\n`);
+    console.error(`====================================\n`);
+    
     throw error;
   }
 }
 
-export async function disconnectSession(tenantId) {
-  console.log(`\n🔌 Desconectando sessão para tenant: ${tenantId}`);
+/**
+ * Desconecta uma sessão do WhatsApp
+ */
+export async function disconnectBaileys(tenantId) {
+  console.log(`\n🔌 Desconectando sessão: ${tenantId}`);
   
   const sock = sessions.get(tenantId);
-  if (sock) {
-    try {
-      await sock.logout();
-      sessions.delete(tenantId);
-      await updateSessionStatus(tenantId, 'disconnected');
-      console.log(`✅ Sessão desconectada com sucesso`);
-    } catch (error) {
-      console.error(`❌ Erro ao desconectar:`, error);
-      throw error;
-    }
-  } else {
+  if (!sock) {
     console.log(`⚠️  Nenhuma sessão ativa encontrada`);
+    return { success: false, message: 'Nenhuma sessão ativa encontrada' };
+  }
+
+  try {
+    await sock.logout();
+    sessions.delete(tenantId);
+    
+    await updateSessionStatus(tenantId, 'disconnected');
+    
+    console.log(`✅ Sessão desconectada com sucesso`);
+    return { success: true, message: 'Desconectado com sucesso' };
+  } catch (error) {
+    console.error(`❌ Erro ao desconectar:`, error);
+    throw error;
   }
 }
 
-// ========== FUNÇÕES PARA ENVIO DE MENSAGENS ==========
-
 /**
- * Formata número de telefone para JID do WhatsApp
- * Exemplo: +55 31 99765-5064 -> 5531997655064@s.whatsapp.net
+ * Formata um número de telefone para o formato JID do WhatsApp
  */
-function formatPhoneToJid(phone) {
-  // Remove todos os caracteres não numéricos
-  const cleaned = phone.replace(/\D/g, '');
-  
-  // Adiciona o sufixo do WhatsApp
+function formatPhoneToJid(phoneNumber) {
+  // Remove caracteres não numéricos
+  const cleaned = phoneNumber.replace(/\D/g, '');
   return `${cleaned}@s.whatsapp.net`;
 }
 
@@ -265,10 +256,10 @@ export async function sendWhatsAppMessage(tenantId, phoneNumber, message) {
       throw new Error('Sessão WhatsApp não encontrada. Conecte-se primeiro.');
     }
 
-    // Verificar se a conexão está aberta
-    if (sock.ws?.readyState !== 1) {
-      console.error(`❌ Conexão não está aberta (readyState: ${sock.ws?.readyState})`);
-      throw new Error('Conexão WhatsApp não está ativa. Reconecte e tente novamente.');
+    // ✅ CORREÇÃO: Verificar se está autenticado usando sock.user
+    if (!sock.user) {
+      console.error(`❌ Conexão não está autenticada (sock.user: ${sock.user})`);
+      throw new Error('Conexão WhatsApp não está autenticada. Reconecte e tente novamente.');
     }
 
     // Formatar número para JID
