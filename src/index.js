@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 // Inicializar Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseWebhookUrl = process.env.SUPABASE_WEBHOOK_URL; // 🆕 NOVA VARIÁVEL
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 // CORS - permitir requisições do Lovable
@@ -39,9 +40,9 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// ========== NOVA FUNÇÃO: Processar mensagem recebida com AI ==========
+// ========== FUNÇÃO ATUALIZADA: Enviar mensagem para Supabase Webhook (com debounce) ==========
 async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
-  console.log(`\n🤖 ===== PROCESSANDO MENSAGEM COM AI =====`);
+  console.log(`\n📥 ===== MENSAGEM RECEBIDA (BAILEYS) =====`);
   console.log(`   Tenant: ${tenantId}`);
   console.log(`   From: ${from}`);
   console.log(`   Text: ${text.substring(0, 100)}...`);
@@ -51,144 +52,42 @@ async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
     const phoneNumber = normalizePhoneNumber(from);
     console.log(`   📞 Número normalizado: ${phoneNumber}`);
 
-    // 2. Buscar ou criar cliente
-    let { data: client, error: clientError } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('tenant_id', tenantId)
-      .eq('phone', phoneNumber)
-      .maybeSingle();
-
-    if (clientError) {
-      console.error(`❌ Erro ao buscar cliente:`, clientError);
-      throw clientError;
-    }
-
-    // Se cliente não existe, criar
-    if (!client) {
-      console.log(`   ➕ Cliente não encontrado, criando...`);
-      const { data: newClient, error: createError } = await supabase
-        .from('clients')
-        .insert({
-          tenant_id: tenantId,
-          phone: phoneNumber,
-          name: phoneNumber // Usar telefone como nome temporário
-        })
-        .select()
-        .single();
-
-      if (createError) {
-        console.error(`❌ Erro ao criar cliente:`, createError);
-        throw createError;
-      }
-
-      client = newClient;
-      console.log(`   ✅ Cliente criado: ${client.id}`);
-    } else {
-      console.log(`   ✅ Cliente encontrado: ${client.id}`);
-    }
-
-    // 3. Salvar mensagem recebida (inbound)
-    console.log(`   💾 Salvando mensagem inbound...`);
-    const { error: saveInboundError } = await supabase
-      .from('messages')
-      .insert({
-        tenant_id: tenantId,
-        client_id: client.id,
-        body: text,
-        direction: 'inbound'
-      });
-
-    if (saveInboundError) {
-      console.error(`❌ Erro ao salvar mensagem inbound:`, saveInboundError);
-      throw saveInboundError;
-    }
-    console.log(`   ✅ Mensagem inbound salva`);
-
-    // Linha 106: Mensagem inbound já foi salva
-console.log(`   ✅ Mensagem inbound salva`);
-
-// 🆕 ADICIONAR AQUI: Verificar se auto-reply está ativo
-console.log(`   🔍 Verificando configuração de auto-reply...`);
-const { data: tenant, error: tenantError } = await supabase
-  .from('tenants')
-  .select('ai_auto_reply_enabled')
-  .eq('id', tenantId)
-  .single();
-
-if (tenantError) {
-  console.error(`❌ Erro ao buscar configuração do tenant:`, tenantError);
-  throw tenantError;
-}
-
-if (tenant?.ai_auto_reply_enabled === false) {
-  console.log(`⏸️  Respostas automáticas desativadas - mensagem apenas salva`);
-  console.log(`✅ ===== MENSAGEM SALVA (SEM AI) =====\n`);
-  return; // Sair da função sem chamar AI
-}
-
-console.log(`✅ Auto-reply ativo, processando com AI...`);
-
-// Linha 108: Continua com o fluxo normal do chat-assistant
-console.log(`   🤖 Chamando chat-assistant...`);
-
-
+    // 2. 🆕 ENVIAR PARA SUPABASE WEBHOOK (implementa debounce automaticamente)
+    console.log(`   🚀 Enviando para Supabase webhook...`);
     
+    if (!supabaseWebhookUrl) {
+      console.error(`❌ SUPABASE_WEBHOOK_URL não configurado!`);
+      throw new Error('SUPABASE_WEBHOOK_URL não está configurado nas variáveis de ambiente');
+    }
 
-    // 4. Chamar Edge Function chat-assistant para gerar resposta
-    console.log(`   🤖 Chamando chat-assistant...`);
-    const { data: aiResponse, error: aiError } = await supabase.functions.invoke('chat-assistant', {
-      body: {
-        client_id: client.id,
+    const webhookResponse = await fetch(supabaseWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        client_phone: phoneNumber,
         message: text,
-        tenant_id: tenantId // ✅ ADICIONADO
-      },
-      headers: {
-        Authorization: `Bearer ${supabaseServiceKey}` // ✅ ADICIONADO
-      }
+        client_name: phoneNumber // opcional, pode ser melhorado depois
+      })
     });
 
-    if (aiError) {
-      console.error(`❌ Erro ao chamar chat-assistant:`, {
-        message: aiError.message,
-        details: aiError.details,
-        status: aiError.status
-      });
-      throw aiError;
+    if (!webhookResponse.ok) {
+      const errorText = await webhookResponse.text();
+      console.error(`❌ Erro ao enviar para webhook:`, errorText);
+      throw new Error(`Webhook falhou: ${errorText}`);
     }
 
-    const aiMessage = aiResponse?.response || aiResponse?.message || 'Desculpe, não consegui processar sua mensagem.';
-    console.log(`   ✅ Resposta da AI: ${aiMessage.substring(0, 100)}...`);
+    const webhookData = await webhookResponse.json();
+    console.log(`   ✅ Webhook processado com sucesso:`, webhookData);
+    console.log(`   ⏱️  Mensagem agendada para processamento em: ${webhookData.scheduled_at}`);
+    console.log(`✅ ===== MENSAGEM ENVIADA PARA FILA DE PROCESSAMENTO =====\n`);
 
-    // 5. Enviar resposta via WhatsApp
-    console.log(`   📤 Enviando resposta via WhatsApp...`);
-    await sendWhatsAppMessage(tenantId, phoneNumber, aiMessage);
-    console.log(`   ✅ Resposta enviada via WhatsApp`);
-
-    // 6. Salvar resposta (outbound)
-    console.log(`   💾 Salvando mensagem outbound...`);
-    const { error: saveOutboundError } = await supabase
-      .from('messages')
-      .insert({
-        tenant_id: tenantId,
-        client_id: client.id,
-        body: aiMessage,
-        direction: 'outbound'
-      });
-
-    if (saveOutboundError) {
-      console.error(`❌ Erro ao salvar mensagem outbound:`, saveOutboundError);
-      throw saveOutboundError;
-    }
-    console.log(`   ✅ Mensagem outbound salva`);
-
-    console.log(`✅ ===== FLUXO COMPLETO COM SUCESSO =====\n`);
   } catch (error) {
-    console.error(`\n❌ ===== ERRO NO FLUXO DE AI =====`);
+    console.error(`\n❌ ===== ERRO AO PROCESSAR MENSAGEM =====`);
     console.error(`   Tenant: ${tenantId}`);
     console.error(`   Erro:`, error);
     console.error(`   Stack:`, error.stack);
-    console.error(`=====================================\n`);
+    console.error(`============================================\n`);
   }
 }
 
@@ -255,7 +154,7 @@ app.post('/disconnect', async (req, res) => {
   }
 });
 
-// Enviar mensagem
+// Enviar mensagem (usado pelo Supabase process-message-queue)
 app.post('/send-message', async (req, res) => {
   const { tenant_id, phone, message } = req.body;
 
@@ -312,7 +211,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 URL: http://0.0.0.0:${PORT}`);
   console.log(`🔐 Multi-tenant: ATIVADO`);
   console.log(`🌍 CORS: HABILITADO`);
-  console.log(`🤖 AI Auto-response: ATIVADO`);
+  console.log(`🤖 AI com Debounce: ATIVADO`);
   console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
   console.log(`================================\n`);
 });
