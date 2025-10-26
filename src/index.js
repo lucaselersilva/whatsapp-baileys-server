@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
 import { initializeBaileys, disconnectSession, sendWhatsAppMessage, normalizePhoneNumber } from './baileys.js';
 import { createClient } from '@supabase/supabase-js';
 
@@ -9,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 // Inicializar Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabaseWebhookUrl = process.env.SUPABASE_WEBHOOK_URL; // 🆕 NOVA VARIÁVEL
+const supabaseWebhookUrl = process.env.SUPABASE_WEBHOOK_URL;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 // CORS - permitir requisições do Lovable
@@ -40,7 +41,7 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// ========== FUNÇÃO ATUALIZADA: Enviar mensagem para Supabase Webhook (com debounce) ==========
+// ========== FUNÇÃO: Enviar mensagem para Supabase Webhook (com debounce) ==========
 async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
   console.log(`\n📥 ===== MENSAGEM RECEBIDA (BAILEYS) =====`);
   console.log(`   Tenant: ${tenantId}`);
@@ -52,7 +53,7 @@ async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
     const phoneNumber = normalizePhoneNumber(from);
     console.log(`   📞 Número normalizado: ${phoneNumber}`);
 
-    // 2. 🆕 ENVIAR PARA SUPABASE WEBHOOK (implementa debounce automaticamente)
+    // 2. ENVIAR PARA SUPABASE WEBHOOK (implementa debounce automaticamente)
     console.log(`   🚀 Enviando para Supabase webhook...`);
     
     if (!supabaseWebhookUrl) {
@@ -67,7 +68,7 @@ async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
         tenant_id: tenantId,
         client_phone: phoneNumber,
         message: text,
-        client_name: phoneNumber // opcional, pode ser melhorado depois
+        client_name: phoneNumber
       })
     });
 
@@ -100,7 +101,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// Conectar WhatsApp (MODIFICADO: passa callback)
+// Conectar WhatsApp
 app.post('/connect', async (req, res) => {
   const { tenant_id, tenantId } = req.body;
   const finalTenantId = tenant_id || tenantId;
@@ -116,7 +117,6 @@ app.post('/connect', async (req, res) => {
   }
 
   try {
-    // Passar handleIncomingMessage como callback
     await initializeBaileys(finalTenantId, handleIncomingMessage);
     console.log(`✅ Inicialização bem-sucedida`);
     console.log(`================================\n`);
@@ -149,6 +149,78 @@ app.post('/disconnect', async (req, res) => {
   } catch (error) {
     res.status(500).json({ 
       error: 'Erro ao desconectar WhatsApp',
+      details: error.message 
+    });
+  }
+});
+
+// 🆕 NOVO ENDPOINT: Logout forçado - limpa sessão completamente
+app.post('/logout', async (req, res) => {
+  const { tenant_id, tenantId } = req.body;
+  const finalTenantId = tenant_id || tenantId;
+
+  console.log(`\n🗑️  ===== REQUISIÇÃO LOGOUT FORÇADO =====`);
+  console.log(`   Tenant ID: ${finalTenantId}`);
+  console.log(`   IP: ${req.ip}`);
+  console.log(`   Timestamp: ${new Date().toISOString()}`);
+
+  if (!finalTenantId) {
+    console.log(`❌ Tenant ID não fornecido`);
+    return res.status(400).json({ error: 'tenant_id ou tenantId é obrigatório' });
+  }
+
+  try {
+    // 1. Desconectar socket se existir
+    try {
+      await disconnectSession(finalTenantId);
+      console.log(`   ✅ Socket desconectado`);
+    } catch (disconnectError) {
+      console.log(`   ⚠️  Aviso ao desconectar socket:`, disconnectError.message);
+      // Continuar mesmo se não houver socket ativo
+    }
+
+    // 2. Deletar pasta de sessão completamente
+    const sessionDir = `./sessions/${finalTenantId}`;
+    
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      console.log(`   ✅ Pasta de sessão deletada: ${sessionDir}`);
+    } else {
+      console.log(`   ℹ️  Pasta de sessão não existia: ${sessionDir}`);
+    }
+
+    // 3. Atualizar status no Supabase para 'disconnected'
+    const { error: updateError } = await supabase
+      .from('whatsapp_sessions')
+      .update({ 
+        status: 'disconnected', 
+        qr_code: null,
+        session_data: null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('tenant_id', finalTenantId);
+    
+    if (updateError) {
+      console.error(`   ⚠️  Erro ao atualizar status no Supabase:`, updateError);
+      // Continuar mesmo se falhar - o importante é limpar os arquivos
+    } else {
+      console.log(`   ✅ Status atualizado no Supabase`);
+    }
+    
+    console.log(`✅ Logout forçado concluído com sucesso`);
+    console.log(`=====================================\n`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Sessão limpa completamente. Você pode reconectar agora.' 
+    });
+  } catch (error) {
+    console.error(`❌ Erro no logout forçado:`, error);
+    console.error(`   Stack:`, error.stack);
+    console.log(`=====================================\n`);
+    
+    res.status(500).json({ 
+      error: 'Erro ao fazer logout forçado',
       details: error.message 
     });
   }
