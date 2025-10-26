@@ -47,7 +47,12 @@ async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
   console.log(`   Tenant: ${tenantId}`);
   console.log(`   From: ${from}`);
   console.log(`   Text: ${text.substring(0, 100)}...`);
-  
+  // Ignorar mensagens de grupo
+if (from.endsWith('@g.us')) {
+  console.log(`   ⚠️  IGNORADO: Mensagem de grupo detectada`);
+  return;
+}
+
   try {
     // 1. Normalizar telefone (remover @s.whatsapp.net)
     const phoneNumber = normalizePhoneNumber(from);
