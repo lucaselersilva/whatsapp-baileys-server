@@ -9,6 +9,18 @@ import path from 'path';
 const sessions = new Map();
 const logger = pino({ level: 'silent' });
 
+// ========== NOVA FUNÇÃO: Normalizar telefone ==========
+/**
+ * Remove o sufixo @s.whatsapp.net do JID
+ * Exemplo: 5531997655064@s.whatsapp.net -> 5531997655064
+ */
+export function normalizePhoneNumber(jid) {
+  return jid.replace('@s.whatsapp.net', '');
+}
+
+// ========== EXPORTAR SESSIONS PARA USO EXTERNO ==========
+export { sessions };
+
 // Garantir que o diretório de sessões existe
 function ensureSessionDir(tenantId) {
   const sessionDir = path.join(process.cwd(), 'sessions', tenantId);
@@ -19,7 +31,8 @@ function ensureSessionDir(tenantId) {
   return sessionDir;
 }
 
-export async function initializeBaileys(tenantId) {
+// ========== MODIFICADO: Aceitar callback onMessage ==========
+export async function initializeBaileys(tenantId, onMessage = null) {
   console.log(`\n🚀 ===== INICIALIZANDO BAILEYS =====`);
   console.log(`   Tenant ID: ${tenantId}`);
   console.log(`   Timestamp: ${new Date().toISOString()}`);
@@ -68,6 +81,46 @@ export async function initializeBaileys(tenantId) {
 
     console.log(`   Socket criado com sucesso`);
 
+    // ========== NOVO: Capturar mensagens recebidas ==========
+    if (onMessage) {
+      sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        try {
+          for (const msg of messages) {
+            // Ignorar mensagens enviadas por nós
+            if (msg.key.fromMe) continue;
+            
+            // Ignorar status broadcast
+            if (msg.key.remoteJid === 'status@broadcast') continue;
+
+            // Extrair texto da mensagem
+            const messageText = msg.message?.conversation || 
+                               msg.message?.extendedTextMessage?.text || 
+                               '';
+
+            if (!messageText) continue;
+
+            console.log(`\n📩 ===== MENSAGEM RECEBIDA =====`);
+            console.log(`   Tenant: ${tenantId}`);
+            console.log(`   De: ${msg.key.remoteJid}`);
+            console.log(`   Texto: ${messageText.substring(0, 50)}...`);
+            console.log(`   Timestamp: ${new Date().toISOString()}`);
+            console.log(`===============================\n`);
+
+            // Chamar callback com os dados da mensagem
+            await onMessage({
+              tenantId,
+              from: msg.key.remoteJid,
+              text: messageText,
+              timestamp: msg.messageTimestamp
+            });
+          }
+        } catch (error) {
+          console.error(`❌ Erro ao processar mensagem:`, error);
+        }
+      });
+      console.log(`✅ Listener de mensagens registrado`);
+    }
+
     // Evento: QR Code gerado
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -115,7 +168,7 @@ export async function initializeBaileys(tenantId) {
           console.log(`   ♻️  Reconectando em 5 segundos...`);
           setTimeout(() => {
             sessions.delete(tenantId);
-            initializeBaileys(tenantId);
+            initializeBaileys(tenantId, onMessage); // Passar callback na reconexão
           }, 5000);
         } else {
           console.log(`   Removendo sessão (logout)...`);
@@ -179,7 +232,8 @@ export async function disconnectSession(tenantId) {
     console.log(`⚠️  Nenhuma sessão ativa encontrada`);
   }
 }
-// ========== NOVAS FUNÇÕES PARA ENVIO DE MENSAGENS ==========
+
+// ========== FUNÇÕES PARA ENVIO DE MENSAGENS ==========
 
 /**
  * Formata número de telefone para JID do WhatsApp
