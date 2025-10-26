@@ -179,3 +179,70 @@ export async function disconnectSession(tenantId) {
     console.log(`⚠️  Nenhuma sessão ativa encontrada`);
   }
 }
+// ========== NOVAS FUNÇÕES PARA ENVIO DE MENSAGENS ==========
+
+/**
+ * Formata número de telefone para JID do WhatsApp
+ * Exemplo: +55 31 99765-5064 -> 5531997655064@s.whatsapp.net
+ */
+function formatPhoneToJid(phone) {
+  // Remove todos os caracteres não numéricos
+  const cleaned = phone.replace(/\D/g, '');
+  
+  // Adiciona o sufixo do WhatsApp
+  return `${cleaned}@s.whatsapp.net`;
+}
+
+/**
+ * Envia uma mensagem via WhatsApp usando a sessão ativa
+ */
+export async function sendWhatsAppMessage(tenantId, phoneNumber, message) {
+  console.log(`\n📤 ===== ENVIANDO MENSAGEM =====`);
+  console.log(`   Tenant ID: ${tenantId}`);
+  console.log(`   Phone: ${phoneNumber}`);
+  console.log(`   Message length: ${message.length}`);
+  
+  try {
+    // Buscar sessão ativa
+    const sock = sessions.get(tenantId);
+    
+    if (!sock) {
+      console.error(`❌ Sessão não encontrada para tenant: ${tenantId}`);
+      throw new Error('Sessão WhatsApp não encontrada. Conecte-se primeiro.');
+    }
+
+    // Verificar se a conexão está aberta
+    if (sock.ws?.readyState !== 1) {
+      console.error(`❌ Conexão não está aberta (readyState: ${sock.ws?.readyState})`);
+      throw new Error('Conexão WhatsApp não está ativa. Reconecte e tente novamente.');
+    }
+
+    // Formatar número para JID
+    const jid = formatPhoneToJid(phoneNumber);
+    console.log(`   JID formatado: ${jid}`);
+
+    // Enviar mensagem
+    const result = await sock.sendMessage(jid, { 
+      text: message 
+    });
+
+    console.log(`✅ Mensagem enviada com sucesso`);
+    console.log(`   Result:`, result);
+    console.log(`===============================\n`);
+
+    return {
+      success: true,
+      messageId: result.key.id,
+      timestamp: result.messageTimestamp
+    };
+  } catch (error) {
+    console.error(`\n❌ ===== ERRO AO ENVIAR MENSAGEM =====`);
+    console.error(`   Tenant: ${tenantId}`);
+    console.error(`   Phone: ${phoneNumber}`);
+    console.error(`   Erro:`, error);
+    console.error(`   Stack:`, error.stack);
+    console.error(`======================================\n`);
+    
+    throw error;
+  }
+}

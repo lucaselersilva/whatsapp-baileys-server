@@ -95,6 +95,56 @@ app.post('/disconnect', async (req, res) => {
   }
 });
 
+// ========== NOVA ROTA PARA ENVIAR MENSAGENS ==========
+app.post('/send-message', async (req, res) => {
+  const { tenant_id, phone, message } = req.body;
+
+  console.log(`\n📨 ===== REQUISIÇÃO SEND MESSAGE =====`);
+  console.log(`   Tenant ID: ${tenant_id}`);
+  console.log(`   Phone: ${phone}`);
+  console.log(`   Message: ${message?.substring(0, 50)}...`);
+  console.log(`   IP: ${req.ip}`);
+  console.log(`   Timestamp: ${new Date().toISOString()}`);
+
+  // Validações
+  if (!tenant_id) {
+    console.log(`❌ Tenant ID não fornecido`);
+    return res.status(400).json({ error: 'tenant_id é obrigatório' });
+  }
+
+  if (!phone) {
+    console.log(`❌ Phone não fornecido`);
+    return res.status(400).json({ error: 'phone é obrigatório' });
+  }
+
+  if (!message || message.trim() === '') {
+    console.log(`❌ Message vazia`);
+    return res.status(400).json({ error: 'message não pode estar vazia' });
+  }
+
+  try {
+    const result = await sendWhatsAppMessage(tenant_id, phone, message);
+    
+    console.log(`✅ Mensagem enviada com sucesso`);
+    console.log(`=====================================\n`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Mensagem enviada via WhatsApp',
+      data: result
+    });
+  } catch (error) {
+    console.error(`❌ Erro ao enviar mensagem:`, error);
+    console.log(`=====================================\n`);
+    
+    res.status(500).json({ 
+      error: 'Erro ao enviar mensagem via WhatsApp',
+      details: error.message 
+    });
+  }
+});
+
+
 // Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 ===== SERVIDOR INICIADO =====`);
