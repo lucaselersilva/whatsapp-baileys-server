@@ -81,7 +81,7 @@ export async function initializeBaileys(tenantId, onMessage = null) {
 
     console.log(`   Socket criado com sucesso`);
 
-    // ========== NOVO: Capturar mensagens recebidas ==========
+    // ========== MODIFICADO: Capturar mensagens com verificação de AI auto-reply ==========
     if (onMessage) {
       sock.ev.on('messages.upsert', async ({ messages, type }) => {
         try {

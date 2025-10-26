@@ -105,6 +105,36 @@ async function handleIncomingMessage({ tenantId, from, text, timestamp }) {
     }
     console.log(`   ✅ Mensagem inbound salva`);
 
+    // Linha 106: Mensagem inbound já foi salva
+console.log(`   ✅ Mensagem inbound salva`);
+
+// 🆕 ADICIONAR AQUI: Verificar se auto-reply está ativo
+console.log(`   🔍 Verificando configuração de auto-reply...`);
+const { data: tenant, error: tenantError } = await supabase
+  .from('tenants')
+  .select('ai_auto_reply_enabled')
+  .eq('id', tenantId)
+  .single();
+
+if (tenantError) {
+  console.error(`❌ Erro ao buscar configuração do tenant:`, tenantError);
+  throw tenantError;
+}
+
+if (tenant?.ai_auto_reply_enabled === false) {
+  console.log(`⏸️  Respostas automáticas desativadas - mensagem apenas salva`);
+  console.log(`✅ ===== MENSAGEM SALVA (SEM AI) =====\n`);
+  return; // Sair da função sem chamar AI
+}
+
+console.log(`✅ Auto-reply ativo, processando com AI...`);
+
+// Linha 108: Continua com o fluxo normal do chat-assistant
+console.log(`   🤖 Chamando chat-assistant...`);
+
+
+    
+
     // 4. Chamar Edge Function chat-assistant para gerar resposta
     console.log(`   🤖 Chamando chat-assistant...`);
     const { data: aiResponse, error: aiError } = await supabase.functions.invoke('chat-assistant', {
